@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -30,6 +31,13 @@ var _ = Describe("HealthCheck", func() {
 			session := healthCheck()
 			Eventually(session).Should(gexec.Exit(code))
 			Expect(session.Out).To(gbytes.Say(reason))
+		})
+	}
+
+	itPasses := func(healthCheck func() *gexec.Session) {
+		It("exits with code 0 and logs reason", func() {
+			session := healthCheck()
+			Eventually(session).Should(gexec.Exit(0))
 		})
 	}
 
@@ -103,6 +111,13 @@ var _ = Describe("HealthCheck", func() {
 			end := time.Now()
 			Expect(end.Sub(start)).To(BeNumerically("~", 1*time.Second, 100*time.Millisecond))
 		})
+
+		It("exits with healthcheck error when signalled", func() {
+			session = httpHealthCheck()
+			Eventually(server.ReceivedRequests, 3*time.Second).Should(HaveLen(2))
+			session.Signal(syscall.SIGTERM)
+			Eventually(session).Should(gexec.Exit(6))
+		})
 	})
 
 	Describe("in liveness mode", func() {
@@ -129,7 +144,8 @@ var _ = Describe("HealthCheck", func() {
 			Consistently(session).ShouldNot(gexec.Exit())
 			atomic.StoreInt64(&statusCode, http.StatusInternalServerError)
 			Eventually(session, 2*time.Second).Should(gexec.Exit(6))
-			Expect(session.Out).To(gbytes.Say("failure to get valid HTTP status code: 500"))
+			Expect(session.Out).NotTo(gbytes.Say("healthcheck failed"))
+			Expect(session.Out).To(gbytes.Say("received status code 500 in"))
 		})
 
 		It("runs a healthcheck every liveness-interval", func() {
@@ -143,7 +159,7 @@ var _ = Describe("HealthCheck", func() {
 
 	Describe("port healthcheck", func() {
 		Context("when the address is listening", func() {
-			itExitsWithCode(portHealthCheck, 0, "healthcheck passed")
+			itPasses(portHealthCheck)
 		})
 
 		Context("when the address is not listening", func() {
@@ -151,7 +167,7 @@ var _ = Describe("HealthCheck", func() {
 				port = "-1"
 			})
 
-			itExitsWithCode(portHealthCheck, 4, "failure to make TCP connection")
+			itExitsWithCode(portHealthCheck, 4, "Failed to make TCP connection to port -1: connection refused")
 		})
 	})
 
@@ -162,7 +178,7 @@ var _ = Describe("HealthCheck", func() {
 			})
 
 			Context("when the address is listening", func() {
-				itExitsWithCode(httpHealthCheck, 0, "healthcheck passed")
+				itPasses(httpHealthCheck)
 			})
 
 			Context("when the address returns error http code", func() {
@@ -170,7 +186,7 @@ var _ = Describe("HealthCheck", func() {
 					server.RouteToHandler("GET", "/api/_ping", ghttp.RespondWith(500, ""))
 				})
 
-				itExitsWithCode(httpHealthCheck, 6, "failure to get valid HTTP status code: 500")
+				itExitsWithCode(httpHealthCheck, 6, "received status code 500 in")
 			})
 		})
 	})
